@@ -17,21 +17,65 @@ class VKParser:
 
     def _call_api(self, method, params):
         params.update({"access_token": self.token, "v": "5.131"})
+        retry_delays = [10, 600, 3600]  # 10 сек, 10 мин, 1 час
+        retry_count = 0
+
         while True:
             try:
                 response = requests.get(
                     f"{self.API_URL}{method}", params=params)
                 data = response.json()
+
                 if "error" in data:
-                    if data["error"]["error_code"] in [6, 10, 28]:
+                    error_code = data["error"]["error_code"]
+                    error_msg = data["error"].get("error_msg", "")
+
+                    # Если это ошибка частоты запросов, делаем паузу и продолжаем
+                    if error_code in [6, 10, 28]:
                         time.sleep(0.1)
                         continue
-                    else:
-                        self.logger.error(f"Ошибка API: {data['error']}")
+                    # Если это критическая ошибка авторизации, прерываем
+                    elif error_code in [5, 17]:
+                        self.logger.error(
+                            f"Критическая ошибка API: {error_msg} (код {error_code})")
                         return None
+                    # Для других ошибок используем экспоненциальную задержку
+                    else:
+                        if retry_count < len(retry_delays):
+                            delay = retry_delays[retry_count]
+                            self.logger.warning(
+                                f"Ошибка API (код {error_code}): {error_msg}. "
+                                f"Повторная попытка через {delay} сек..."
+                            )
+                            time.sleep(delay)
+                            retry_count += 1
+                            continue
+                        else:
+                            self.logger.error(
+                                f"Превышено количество попыток. Последняя ошибка: {error_msg} (код {error_code})"
+                            )
+                            return None
+
+                # Сбрасываем счетчик попыток при успешном ответе
+                retry_count = 0
                 return data["response"]
+
+            except requests.exceptions.RequestException as e:
+                if retry_count < len(retry_delays):
+                    delay = retry_delays[retry_count]
+                    self.logger.warning(
+                        f"Ошибка соединения: {str(e)}. "
+                        f"Повторная попытка через {delay} сек..."
+                    )
+                    time.sleep(delay)
+                    retry_count += 1
+                else:
+                    self.logger.error(
+                        f"Превышено количество попыток. Последняя ошибка: {str(e)}"
+                    )
+                    return None
             except Exception as e:
-                self.logger.error(f"Ошибка запроса: {e}")
+                self.logger.error(f"Непредвиденная ошибка: {str(e)}")
                 return None
 
     def _format_date(self, timestamp: int) -> str:
